@@ -1,0 +1,35 @@
+package: bookinfo
+import:
+- package: github.com/tuneinc/truss
+  subpackages:
+  - deftree/googlethirdparty/annotations.proto
+- package: github.com/joho/godotenv
+  version: ^1.2.0
+- package: github.com/davecgh/go-spew
+  version: ^1.1.0
+  subpackages:
+  - spew
+- package: github.com/go-redis/redis
+  version: ^6.12.0
+- package: github.com/openzipkin/zipkin-go
+  version: ^0.1.0
+  subpackages:
+  - reporter/http
+- package: github.com/jinzhu/gorm
+  version: ^1.9.1
+- package: github.com/prometheus/client_golang
+  version: ^0.9.0-pre1
+  subpackages:
+  - prometheus/promhttp
+- package: github.com/go-sql-driver/mysql
+  version: ^1.4.0
+- package: golang.org/x/time
+  subpackages:
+  - rate
+- package: github.com/afex/hystrix-go
+  subpackages:
+  - hystrix
+- package: github.com/mkevac/debugcharts
+- package: github.com/rakyll/gom
+  subpackages:
+  - http
