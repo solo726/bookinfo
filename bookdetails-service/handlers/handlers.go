@@ -24,6 +24,7 @@ type SvcMiddleware func(pb.BookDetailsServer) pb.BookDetailsServer
 
 // Detail implements Service.
 func (s bookdetailsService) Detail(ctx context.Context, in *pb.DetailReq) (*pb.DetailResp, error) {
+	panic("test")
 	span, newCtx := global.ZPTracer.StartSpanFromContext(
 		ctx,
 		"getting-book-info",

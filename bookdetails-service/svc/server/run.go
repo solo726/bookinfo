@@ -9,8 +9,8 @@ import (
 	// 3d Party
 	"google.golang.org/grpc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	//_ "github.com/mkevac/debugcharts"
-	 _ "github.com/rakyll/gom/http"
+	_ "github.com/mkevac/debugcharts"
+
 	// This Service
 	"bookinfo/bookdetails-service/handlers"
 	"bookinfo/bookdetails-service/svc"
@@ -78,6 +78,7 @@ func Run() {
 	go func() {
 		log.Println("transport", "HTTP", "addr", global.Conf.HttpServer.Addr)
 		h := svc.MakeHTTPHandler(endpoints)
+		h = global.HttpServerPanicHandler{h}
 		errc <- http.ListenAndServe(global.Conf.HttpServer.Addr, h)
 	}()
 
@@ -104,7 +105,8 @@ func Run() {
 		}
 
 		srv := svc.MakeGRPCServer(endpoints)
-		s := grpc.NewServer()
+		s := grpc.NewServer(global.GrpcServerPanicHandlerOptions()...)
+		//s := grpc.NewServer(global.GrpcOpts...)
 		pb.RegisterBookDetailsServer(s, srv)
 
 		errc <- s.Serve(ln)

@@ -10,6 +10,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/openzipkin/zipkin-go"
 	"bookinfo/bookdetails-service/models"
+	"google.golang.org/grpc"
 )
 
 type conf struct {
@@ -86,11 +87,14 @@ var BOOK_DB *db
 
 var ZPTracer *zipkin.Tracer
 
+var GrpcOpts []grpc.ServerOption
+
 func init() {
 	loadConf()
 	Logger = newLogger()
 	BOOK_DB = newBookDB()
 	ZPTracer = newZPTracer()
+	GrpcOpts = loadGrpcOpts()
 	models.Migrate(BOOK_DB.DB)
 }
 

@@ -3,9 +3,6 @@ package handlers
 import (
 	"bookinfo/bookdetails-service/svc"
 	pb "bookinfo/pb/details"
-	"github.com/go-kit/kit/ratelimit"
-	"golang.org/x/time/rate"
-	"time"
 	"github.com/afex/hystrix-go/hystrix"
 )
 
@@ -32,7 +29,6 @@ func WrapEndpoints(in svc.Endpoints) svc.Endpoints {
 	// How to apply a middleware to a single endpoint.
 	// in.ExampleEndpoint = authMiddleware(in.ExampleEndpoint)
 
-
 	//日志
 	in.DetailEndpoint = LoggingEndpointMiddleware()(in.DetailEndpoint)
 
@@ -40,7 +36,7 @@ func WrapEndpoints(in svc.Endpoints) svc.Endpoints {
 	in.DetailEndpoint = ZipkinEndpointMiddleware()(in.DetailEndpoint)
 
 	//限频
-	in.DetailEndpoint = ratelimit.NewErroringLimiter(rate.NewLimiter(rate.Every(time.Second), 10))(in.DetailEndpoint)
+	//in.DetailEndpoint = ratelimit.NewErroringLimiter(rate.NewLimiter(rate.Every(time.Second), 10))(in.DetailEndpoint)
 
 	//熔断
 	hystrix.ConfigureCommand("set", hystrix.CommandConfig{

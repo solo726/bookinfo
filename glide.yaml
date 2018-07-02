@@ -33,3 +33,5 @@ import:
 - package: github.com/rakyll/gom
   subpackages:
   - http
+- package: github.com/grpc-ecosystem/go-grpc-middleware
+  version: ^1.0.0
