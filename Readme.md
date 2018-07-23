@@ -9,9 +9,10 @@ BookInfo 使用golang编写,实现简单的书籍查询服务。
 - [x] 基础代码自动生成
 - [x] 依赖库管理
 - [x] 实时编译
+- [x] 异常崩溃处理
 - [x] 命令行支持
 - [x] grpc支持
-- [x] http 支持
+- [x] http支持
 - [x] 服务熔断
 - [x] 访问频率限制
 - [x] prometheus采集支持
@@ -54,6 +55,7 @@ BookInfo 使用golang编写,实现简单的书籍查询服务。
 |   |   └── zipkin.go //zipkin相关
 |   ├── handlers //业务逻辑目录
 |   |   ├── handlers.go //最终服务实现入口文件
+|   |   ├── handlers_test.go //test文件
 |   |   ├── hooks.go //钩子(graceful在此实现)
 |   |   ├── middlewares.go //中间件加载文件
 |   |   ├── mw_ep_name... //endpoint类型中间件
@@ -151,7 +153,7 @@ $ cat $GOPATH/src/bookinfo/bookdetails-server/runtime/pid | xargs kill -s SIGINT
 ```bash
 $ open http://127.0.0.1:9090
 ```
-<img src="_assets/prometheus.png" />
+<img src="_assets/prom.png" />
 
 ## zipkin调用链路跟踪
 ```bash
@@ -164,6 +166,7 @@ $ open http://127.0.0.1:9411
 ```bash
 $ open http://localhost:5003/debug/charts/
 ```
+<img src="_assets/debug-charts.png" />
 
 > pprof
 ```bash
@@ -187,7 +190,7 @@ $ docker-compose -f docker/docker-compose.yaml \
 # 访问服务
 $ open http://localhost:5005
 ```
-<img src="_assets/pprof.png" />
+<img src="assets/pprof.png" />
 
 
 > 火焰图
@@ -198,11 +201,61 @@ $ cd $GOPATH/src/bookinfo
 $ docker-compose -f docker/docker-compose.yaml exec books-details /go/bin/go-torch -t 30 --file "torch.svg" --url http://localhost:5003
 
 # 获取生成的火焰图
-$ containerName=`docker-compose -f docker/docker-compose.yaml ps books-details | awk '{print $1}'`; \
+$ containerName=`docker-compose -f docker/docker-compose.yaml ps books-details | awk '{print $1}'|grep docker_`; \
   docker cp $containerName:/go/torch.svg /tmp && \
   open -a /Applications/Google\ Chrome.app /tmp/torch.svg
 ```
-<img src="_assets/torch.svg" />
+<img src="assets/torch.svg" />
+
+> 内存火焰图 用于分析程序临时分配内存情况
+```bash
+$ cd $GOPATH/src/bookinfo
+
+# 采集数据生成火焰图
+$ docker-compose -f docker/docker-compose.yaml \
+  exec books-details \
+  /go/bin/go-torch \
+  -t 30 \
+  --file "torch_mem_alloc_space.svg" \
+  -alloc_space http://localhost:5003/debug/pprof/heap \
+  --colors=mem
+
+# copy容器内文件
+$ containername=`docker-compose -f docker/docker-compose.yaml \
+  ps books-details |awk '{print$1}' |grep docker_`
+$ docker cp $containername:/go/torch_mem_alloc_space.svg /tmp
+
+# 打开svg文件
+$ open -a /Applications/Google\ Chrome.app /tmp/torch.svg
+
+```
+<img src="assets/torch_mem_alloc_space.svg" />
+
+> 查看mem火焰图,用于分析程序常驻内存情况
+```bash
+
+$ cd $GOPATH/src/bookinfo
+
+# 采集数据生成火焰图
+$ docker-compose -f docker/docker-compose.yaml \
+  exec books-details \
+  /go/bin/go-torch \
+  -t 30 \
+  --file "torch_mem_inuse_space.svg" \
+  -inuse_space http://localhost:5003/debug/pprof/heap \
+  --colors=mem
+
+# copy容器内文件
+$ containername=`docker-compose -f docker/docker-compose.yaml \
+  ps books-details |awk '{print$1}' |grep docker_`
+$ docker cp $containername:/go/torch_mem_inuse_space.svg /tmp
+
+# 打开svg文件
+$ open -a /Applications/Google\ Chrome.app /tmp/torch.svg
+
+```
+<img src="assets/torch_mem_inuse_space.svg" />
+
 
 >常规debug信息
 ```bash

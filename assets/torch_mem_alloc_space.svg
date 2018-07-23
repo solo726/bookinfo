@@ -1,0 +1,2082 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="550" onload="init(evt)" viewBox="0 0 1200 550" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#e0e0ff" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="550.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="533" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="533" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.ReadAll (524,544 samples, 0.03%)</title><rect x="116.4" y="357" width="0.3" height="15.0" fill="rgb(0,191,207)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.internetSocket (524,304 samples, 0.03%)</title><rect x="105.9" y="357" width="0.3" height="15.0" fill="rgb(0,228,153)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/gzip.(*Writer).Write (5,748,455 samples, 0.32%)</title><rect x="1186.2" y="453" width="3.8" height="15.0" fill="rgb(0,232,69)" rx="2" ry="2" />
+<text text-anchor="" x="1189.17" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).Write (524,464 samples, 0.03%)</title><rect x="1169.1" y="373" width="0.3" height="15.0" fill="rgb(0,229,199)" rx="2" ry="2" />
+<text text-anchor="" x="1172.06" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.LoggingEndpointMiddleware.func1.1 (9,439,184 samples, 0.53%)</title><rect x="110.1" y="357" width="6.3" height="15.0" fill="rgb(0,224,188)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.readAll (2,624,057 samples, 0.15%)</title><rect x="53.4" y="389" width="1.8" height="15.0" fill="rgb(0,194,193)" rx="2" ry="2" />
+<text text-anchor="" x="56.41" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.Marshal (4,719,216 samples, 0.27%)</title><rect x="17.7" y="293" width="3.1" height="15.0" fill="rgb(0,214,105)" rx="2" ry="2" />
+<text text-anchor="" x="20.69" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/models.table (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="373" width="2.9" height="15.0" fill="rgb(0,223,25)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*processCollector).processCollect (52,593,782 samples, 2.97%)</title><rect x="37.7" y="437" width="35.0" height="15.0" fill="rgb(0,216,69)" rx="2" ry="2" />
+<text text-anchor="" x="40.67" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*condAddrEncoder).(encoding/json.encode)-fm (524,336 samples, 0.03%)</title><rect x="19.8" y="117" width="0.3" height="15.0" fill="rgb(0,203,13)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (524,544 samples, 0.03%)</title><rect x="116.4" y="293" width="0.3" height="15.0" fill="rgb(0,222,129)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).doScan (524,296 samples, 0.03%)</title><rect x="53.1" y="389" width="0.3" height="15.0" fill="rgb(0,208,94)" rx="2" ry="2" />
+<text text-anchor="" x="56.06" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.checkMetricConsistency (8,395,106 samples, 0.47%)</title><rect x="139.3" y="357" width="5.6" height="15.0" fill="rgb(0,236,47)" rx="2" ry="2" />
+<text text-anchor="" x="142.26" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.Compile (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="309" width="1.4" height="15.0" fill="rgb(0,215,43)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (524,544 samples, 0.03%)</title><rect x="53.8" y="341" width="0.3" height="15.0" fill="rgb(0,195,167)" rx="2" ry="2" />
+<text text-anchor="" x="56.76" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/models.init (2,622,664 samples, 0.15%)</title><rect x="1176.9" y="405" width="1.7" height="15.0" fill="rgb(0,199,147)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/sirupsen/logrus.(*Entry).Info (524,296 samples, 0.03%)</title><rect x="110.1" y="293" width="0.3" height="15.0" fill="rgb(0,236,21)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.socket (524,304 samples, 0.03%)</title><rect x="105.9" y="341" width="0.3" height="15.0" fill="rgb(0,230,198)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*parser).collapse (524,344 samples, 0.03%)</title><rect x="1177.9" y="229" width="0.4" height="15.0" fill="rgb(0,211,58)" rx="2" ry="2" />
+<text text-anchor="" x="1180.90" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*ptrEncoder).(encoding/json.encode)-fm (3,670,464 samples, 0.21%)</title><rect x="18.4" y="245" width="2.4" height="15.0" fill="rgb(0,195,149)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Scanner).Scan (7,895,079 samples, 0.45%)</title><rect x="42.9" y="405" width="5.3" height="15.0" fill="rgb(0,198,82)" rx="2" ry="2" />
+<text text-anchor="" x="45.92" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.MustCompile (524,928 samples, 0.03%)</title><rect x="1178.3" y="373" width="0.3" height="15.0" fill="rgb(0,232,161)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.Parse (1,048,680 samples, 0.06%)</title><rect x="1177.6" y="277" width="0.7" height="15.0" fill="rgb(0,202,61)" rx="2" ry="2" />
+<text text-anchor="" x="1180.55" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.Compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="325" width="0.3" height="15.0" fill="rgb(0,222,184)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Fields (10,027,450 samples, 0.57%)</title><rect x="66.0" y="389" width="6.7" height="15.0" fill="rgb(0,198,183)" rx="2" ry="2" />
+<text text-anchor="" x="69.01" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/inflection.Plural (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="293" width="2.9" height="15.0" fill="rgb(0,208,33)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.init.0 (4,853,079 samples, 0.27%)</title><rect x="1173.6" y="405" width="3.3" height="15.0" fill="rgb(0,226,130)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.SpanModel.MarshalJSON (5,243,608 samples, 0.30%)</title><rect x="17.3" y="309" width="3.5" height="15.0" fill="rgb(0,227,90)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).TableName (1,573,192 samples, 0.09%)</title><rect x="111.1" y="101" width="1.1" height="15.0" fill="rgb(0,190,25)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.Open (524,328 samples, 0.03%)</title><rect x="15.9" y="357" width="0.4" height="15.0" fill="rgb(0,193,196)" rx="2" ry="2" />
+<text text-anchor="" x="18.94" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.writeSample (2,621,480 samples, 0.15%)</title><rect x="148.3" y="325" width="1.8" height="15.0" fill="rgb(0,210,157)" rx="2" ry="2" />
+<text text-anchor="" x="151.34" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.newClientStream (1,573,160 samples, 0.09%)</title><rect x="114.6" y="149" width="1.1" height="15.0" fill="rgb(0,199,54)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.Instrmw.Detail (8,914,888 samples, 0.50%)</title><rect x="110.4" y="309" width="6.0" height="15.0" fill="rgb(0,198,16)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.init (7,475,743 samples, 0.42%)</title><rect x="1173.6" y="421" width="5.0" height="15.0" fill="rgb(0,208,96)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.Proc.FileDescriptorsLen (5,785,687 samples, 0.33%)</title><rect x="38.4" y="421" width="3.8" height="15.0" fill="rgb(0,200,9)" rx="2" ry="2" />
+<text text-anchor="" x="41.37" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/metrics/prometheus.makeLabels (524,312 samples, 0.03%)</title><rect x="115.7" y="261" width="0.3" height="15.0" fill="rgb(0,212,50)" rx="2" ry="2" />
+<text text-anchor="" x="118.67" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*transferWriter).WriteBody (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="453" width="0.7" height="15.0" fill="rgb(0,237,184)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.openFileNolog (524,292 samples, 0.03%)</title><rect x="48.2" y="373" width="0.3" height="15.0" fill="rgb(0,236,92)" rx="2" ry="2" />
+<text text-anchor="" x="51.18" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/reporter/http.(*httpReporter).loop.func2 (7,878,159 samples, 0.44%)</title><rect x="17.3" y="485" width="5.3" height="15.0" fill="rgb(0,190,117)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (524,448 samples, 0.03%)</title><rect x="18.7" y="133" width="0.4" height="15.0" fill="rgb(0,224,59)" rx="2" ry="2" />
+<text text-anchor="" x="21.73" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.MIMEHeader.Set (1,048,760 samples, 0.06%)</title><rect x="1169.4" y="357" width="0.7" height="15.0" fill="rgb(0,226,129)" rx="2" ry="2" />
+<text text-anchor="" x="1172.41" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*processCollector).(bookinfo/vendor/github.com/prometheus/client_golang/prometheus.processCollect)-fm (52,593,782 samples, 2.97%)</title><rect x="37.7" y="453" width="35.0" height="15.0" fill="rgb(0,196,25)" rx="2" ry="2" />
+<text text-anchor="" x="40.67" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*machine).backtrack (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="229" width="2.9" height="15.0" fill="rgb(0,228,60)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Request).write (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="469" width="0.7" height="15.0" fill="rgb(0,210,133)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.Set (1,048,760 samples, 0.06%)</title><rect x="1169.4" y="373" width="0.7" height="15.0" fill="rgb(0,198,177)" rx="2" ry="2" />
+<text text-anchor="" x="1172.41" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Write (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="229" width="0.7" height="15.0" fill="rgb(0,239,191)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.(*File).readdirnames (5,261,359 samples, 0.30%)</title><rect x="38.4" y="373" width="3.5" height="15.0" fill="rgb(0,233,78)" rx="2" ry="2" />
+<text text-anchor="" x="41.37" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="277" width="0.3" height="15.0" fill="rgb(0,238,141)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).fillFromStatWithContext (11,017,938 samples, 0.62%)</title><rect x="10.0" y="421" width="7.3" height="15.0" fill="rgb(0,228,142)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Client).send (524,312 samples, 0.03%)</title><rect x="22.2" y="437" width="0.4" height="15.0" fill="rgb(0,233,118)" rx="2" ry="2" />
+<text text-anchor="" x="25.23" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.Sscanf (1,048,592 samples, 0.06%)</title><rect x="61.8" y="373" width="0.7" height="15.0" fill="rgb(0,198,198)" rx="2" ry="2" />
+<text text-anchor="" x="64.81" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reflect.mapiterinit (524,336 samples, 0.03%)</title><rect x="19.1" y="133" width="0.3" height="15.0" fill="rgb(0,204,93)" rx="2" ry="2" />
+<text text-anchor="" x="22.08" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).QuotedTableName (1,573,192 samples, 0.09%)</title><rect x="111.1" y="117" width="1.1" height="15.0" fill="rgb(0,214,130)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.TraceID.String (524,296 samples, 0.03%)</title><rect x="20.5" y="133" width="0.3" height="15.0" fill="rgb(0,205,91)" rx="2" ry="2" />
+<text text-anchor="" x="23.48" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*decodeState).decodeResponseHeader (524,464 samples, 0.03%)</title><rect x="103.5" y="453" width="0.3" height="15.0" fill="rgb(0,219,192)" rx="2" ry="2" />
+<text text-anchor="" x="106.45" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.init (7,475,743 samples, 0.42%)</title><rect x="1173.6" y="437" width="5.0" height="15.0" fill="rgb(0,226,57)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="293" width="0.3" height="15.0" fill="rgb(0,225,70)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*processCollector).Collect (52,593,782 samples, 2.97%)</title><rect x="37.7" y="469" width="35.0" height="15.0" fill="rgb(0,195,150)" rx="2" ry="2" />
+<text text-anchor="" x="40.67" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*summary).Write (1,572,952 samples, 0.09%)</title><rect x="138.2" y="357" width="1.1" height="15.0" fill="rgb(0,231,93)" rx="2" ry="2" />
+<text text-anchor="" x="141.21" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2.(*Framer).readMetaFrame (1,048,776 samples, 0.06%)</title><rect x="102.1" y="453" width="0.7" height="15.0" fill="rgb(0,207,78)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.ID.MarshalJSON (524,304 samples, 0.03%)</title><rect x="20.1" y="149" width="0.4" height="15.0" fill="rgb(0,207,74)" rx="2" ry="2" />
+<text text-anchor="" x="23.13" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.readRequest (1,572,984 samples, 0.09%)</title><rect x="108.7" y="453" width="1.0" height="15.0" fill="rgb(0,220,167)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).rune (524,928 samples, 0.03%)</title><rect x="1178.3" y="245" width="0.3" height="15.0" fill="rgb(0,195,117)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).doMatch (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="261" width="2.9" height="15.0" fill="rgb(0,234,53)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*Registry).Gather (43,291,201 samples, 2.44%)</title><rect x="117.8" y="373" width="28.8" height="15.0" fill="rgb(0,207,86)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.compact (2,110,239 samples, 0.12%)</title><rect x="20.8" y="325" width="1.4" height="15.0" fill="rgb(0,203,202)" rx="2" ry="2" />
+<text text-anchor="" x="23.83" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/gorilla/mux.contextSet (524,416 samples, 0.03%)</title><rect x="117.1" y="389" width="0.3" height="15.0" fill="rgb(0,203,23)" rx="2" ry="2" />
+<text text-anchor="" x="120.07" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.MustNewConstMetric (1,572,936 samples, 0.09%)</title><rect x="26.4" y="453" width="1.1" height="15.0" fill="rgb(0,237,37)" rx="2" ry="2" />
+<text text-anchor="" x="29.45" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanBitWriter).writeTokens (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="277" width="0.7" height="15.0" fill="rgb(0,218,7)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).clone (1,573,256 samples, 0.09%)</title><rect x="112.2" y="53" width="1.0" height="15.0" fill="rgb(0,226,186)" rx="2" ry="2" />
+<text text-anchor="" x="115.18" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*constSummary).Write (1,048,616 samples, 0.06%)</title><rect x="137.5" y="357" width="0.7" height="15.0" fill="rgb(0,203,89)" rx="2" ry="2" />
+<text text-anchor="" x="140.52" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).Scan (4,720,000 samples, 0.27%)</title><rect x="110.8" y="213" width="3.1" height="15.0" fill="rgb(0,216,37)" rx="2" ry="2" />
+<text text-anchor="" x="113.79" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.openFileNolog (524,328 samples, 0.03%)</title><rect x="15.9" y="325" width="0.4" height="15.0" fill="rgb(0,227,18)" rx="2" ry="2" />
+<text text-anchor="" x="18.94" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (524,448 samples, 0.03%)</title><rect x="18.7" y="149" width="0.4" height="15.0" fill="rgb(0,225,37)" rx="2" ry="2" />
+<text text-anchor="" x="21.73" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/transport/http.Server.ServeHTTP (10,488,024 samples, 0.59%)</title><rect x="110.1" y="389" width="7.0" height="15.0" fill="rgb(0,212,171)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*condAddrEncoder).encode (524,336 samples, 0.03%)</title><rect x="19.8" y="101" width="0.3" height="15.0" fill="rgb(0,190,51)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.HandlerFunc.ServeHTTP (1,584,585,723 samples, 89.42%)</title><rect x="117.8" y="437" width="1055.1" height="15.0" fill="rgb(0,238,180)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.HandlerFunc.ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Fields (1,574,208 samples, 0.09%)</title><rect x="16.3" y="373" width="1.0" height="15.0" fill="rgb(0,191,97)" rx="2" ry="2" />
+<text text-anchor="" x="19.29" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2.parsePingFrame (524,304 samples, 0.03%)</title><rect x="102.8" y="453" width="0.3" height="15.0" fill="rgb(0,239,140)" rx="2" ry="2" />
+<text text-anchor="" x="105.75" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(Handler).ServeHTTP-fm (1,580,355,083 samples, 89.18%)</title><rect x="117.8" y="421" width="1052.3" height="15.0" fill="rgb(0,192,41)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(Handler).ServeHTTP-fm</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (2,098,176 samples, 0.12%)</title><rect x="11.7" y="309" width="1.4" height="15.0" fill="rgb(0,201,181)" rx="2" ry="2" />
+<text text-anchor="" x="14.75" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*dnsMsg).Unpack (524,296 samples, 0.03%)</title><rect x="107.6" y="421" width="0.4" height="15.0" fill="rgb(0,230,162)" rx="2" ry="2" />
+<text text-anchor="" x="110.64" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime/debug.ReadGCStats (15,283,337 samples, 0.86%)</title><rect x="27.5" y="453" width="10.2" height="15.0" fill="rgb(0,220,204)" rx="2" ry="2" />
+<text text-anchor="" x="30.49" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>internal/poll.(*FD).Init (524,296 samples, 0.03%)</title><rect x="55.2" y="341" width="0.3" height="15.0" fill="rgb(0,217,209)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.parseCPUStat (1,572,920 samples, 0.09%)</title><rect x="61.5" y="389" width="1.0" height="15.0" fill="rgb(0,224,58)" rx="2" ry="2" />
+<text text-anchor="" x="64.46" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.dialSingle (524,304 samples, 0.03%)</title><rect x="105.9" y="389" width="0.3" height="15.0" fill="rgb(0,192,148)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).write (524,464 samples, 0.03%)</title><rect x="1169.1" y="357" width="0.3" height="15.0" fill="rgb(0,199,82)" rx="2" ry="2" />
+<text text-anchor="" x="1172.06" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*sliceEncoder).encode (7,353,847 samples, 0.41%)</title><rect x="17.3" y="389" width="4.9" height="15.0" fill="rgb(0,215,192)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Getpeername (524,304 samples, 0.03%)</title><rect x="105.9" y="309" width="0.3" height="15.0" fill="rgb(0,236,29)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/inflection.init.0 (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="357" width="1.4" height="15.0" fill="rgb(0,234,88)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.compact (524,336 samples, 0.03%)</title><rect x="19.8" y="69" width="0.3" height="15.0" fill="rgb(0,203,110)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.Fscan (524,296 samples, 0.03%)</title><rect x="53.1" y="405" width="0.3" height="15.0" fill="rgb(0,221,83)" rx="2" ry="2" />
+<text text-anchor="" x="56.06" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/context.WithDeadline (524,336 samples, 0.03%)</title><rect x="114.3" y="181" width="0.3" height="15.0" fill="rgb(0,234,151)" rx="2" ry="2" />
+<text text-anchor="" x="117.28" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.(*Instrmw).Detail (8,914,888 samples, 0.50%)</title><rect x="110.4" y="325" width="6.0" height="15.0" fill="rgb(0,192,158)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.dialUDP (524,304 samples, 0.03%)</title><rect x="105.9" y="373" width="0.3" height="15.0" fill="rgb(0,235,171)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*structEncoder).encode (524,296 samples, 0.03%)</title><rect x="19.4" y="133" width="0.4" height="15.0" fill="rgb(0,212,159)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).WriteHeader (524,464 samples, 0.03%)</title><rect x="1169.1" y="341" width="0.3" height="15.0" fill="rgb(0,235,40)" rx="2" ry="2" />
+<text text-anchor="" x="1172.06" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Decoder).parseFieldIndexed (524,312 samples, 0.03%)</title><rect x="102.1" y="405" width="0.3" height="15.0" fill="rgb(0,196,149)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*compressor).init (192,393,526 samples, 10.86%)</title><rect x="1033.2" y="277" width="128.2" height="15.0" fill="rgb(0,228,150)" rx="2" ry="2" />
+<text text-anchor="" x="1036.25" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >compress/flate.(..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.NewConstMetric (1,572,936 samples, 0.09%)</title><rect x="26.4" y="437" width="1.1" height="15.0" fill="rgb(0,197,68)" rx="2" ry="2" />
+<text text-anchor="" x="29.45" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (1,573,168 samples, 0.09%)</title><rect x="104.1" y="357" width="1.1" height="15.0" fill="rgb(0,217,46)" rx="2" ry="2" />
+<text text-anchor="" x="107.15" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (2,110,239 samples, 0.12%)</title><rect x="20.8" y="277" width="1.4" height="15.0" fill="rgb(0,209,184)" rx="2" ry="2" />
+<text text-anchor="" x="23.83" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Request).WithContext (524,416 samples, 0.03%)</title><rect x="117.1" y="373" width="0.3" height="15.0" fill="rgb(0,212,208)" rx="2" ry="2" />
+<text text-anchor="" x="120.07" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*arrayEncoder).(encoding/json.encode)-fm (524,336 samples, 0.03%)</title><rect x="19.8" y="149" width="0.3" height="15.0" fill="rgb(0,191,159)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.ProcStat.StartTime (25,801,915 samples, 1.46%)</title><rect x="55.5" y="421" width="17.2" height="15.0" fill="rgb(0,231,48)" rx="2" ry="2" />
+<text text-anchor="" x="58.51" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.logger.InfoWithFields (524,296 samples, 0.03%)</title><rect x="110.1" y="325" width="0.3" height="15.0" fill="rgb(0,229,24)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).QuotedTableName (1,573,256 samples, 0.09%)</title><rect x="112.2" y="101" width="1.0" height="15.0" fill="rgb(0,191,62)" rx="2" ry="2" />
+<text text-anchor="" x="115.18" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanBitWriter).writeBlock (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="293" width="7.4" height="15.0" fill="rgb(0,200,207)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).doExecute (1,048,592 samples, 0.06%)</title><rect x="52.0" y="357" width="0.7" height="15.0" fill="rgb(0,223,202)" rx="2" ry="2" />
+<text text-anchor="" x="55.02" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.anyToSockaddr (524,304 samples, 0.03%)</title><rect x="105.9" y="293" width="0.3" height="15.0" fill="rgb(0,194,0)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/metrics/prometheus.(*Summary).Observe (524,432 samples, 0.03%)</title><rect x="116.0" y="277" width="0.4" height="15.0" fill="rgb(0,196,48)" rx="2" ry="2" />
+<text text-anchor="" x="119.02" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/sirupsen/logrus.Entry.log (524,296 samples, 0.03%)</title><rect x="110.1" y="277" width="0.3" height="15.0" fill="rgb(0,194,146)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.(*loggingSvcMiddleware).Detail (7,866,144 samples, 0.44%)</title><rect x="110.4" y="293" width="5.3" height="15.0" fill="rgb(0,225,105)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.OpenFile (524,292 samples, 0.03%)</title><rect x="48.2" y="389" width="0.3" height="15.0" fill="rgb(0,207,38)" rx="2" ry="2" />
+<text text-anchor="" x="51.18" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.MustCompile (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="325" width="1.4" height="15.0" fill="rgb(0,215,190)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).autoMigrate (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="341" width="2.9" height="15.0" fill="rgb(0,236,161)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).doScanf (524,296 samples, 0.03%)</title><rect x="62.2" y="341" width="0.3" height="15.0" fill="rgb(0,222,98)" rx="2" ry="2" />
+<text text-anchor="" x="65.16" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).doMatch (526,338 samples, 0.03%)</title><rect x="1173.6" y="245" width="0.4" height="15.0" fill="rgb(0,216,146)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).dial (524,304 samples, 0.03%)</title><rect x="105.9" y="325" width="0.3" height="15.0" fill="rgb(0,221,59)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).Create (526,338 samples, 0.03%)</title><rect x="1173.6" y="357" width="0.4" height="15.0" fill="rgb(0,239,19)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.(*bookdetailsService).Detail (7,866,144 samples, 0.44%)</title><rect x="110.4" y="261" width="5.3" height="15.0" fill="rgb(0,230,100)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).TimesWithContext (11,017,938 samples, 0.62%)</title><rect x="10.0" y="453" width="7.3" height="15.0" fill="rgb(0,235,67)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.addrMarshalerEncoder (524,336 samples, 0.03%)</title><rect x="19.8" y="85" width="0.3" height="15.0" fill="rgb(0,229,25)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).scanUint (524,296 samples, 0.03%)</title><rect x="53.1" y="357" width="0.3" height="15.0" fill="rgb(0,219,203)" rx="2" ry="2" />
+<text text-anchor="" x="56.06" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.grpcClient.Go (1,573,160 samples, 0.09%)</title><rect x="114.6" y="229" width="1.1" height="15.0" fill="rgb(0,237,87)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/models.Migrate (4,853,079 samples, 0.27%)</title><rect x="1173.6" y="389" width="3.3" height="15.0" fill="rgb(0,195,55)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*pickfirstBalancer).HandleSubConnStateChange (524,336 samples, 0.03%)</title><rect x="101.7" y="469" width="0.4" height="15.0" fill="rgb(0,193,9)" rx="2" ry="2" />
+<text text-anchor="" x="104.71" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/reporter/http.(*httpReporter).sendBatch (7,878,159 samples, 0.44%)</title><rect x="17.3" y="469" width="5.3" height="15.0" fill="rgb(0,226,111)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.loggingSvcMiddleware.Detail (7,866,144 samples, 0.44%)</title><rect x="110.4" y="277" width="5.3" height="15.0" fill="rgb(0,197,203)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Put (524,416 samples, 0.03%)</title><rect x="109.7" y="437" width="0.4" height="15.0" fill="rgb(0,202,56)" rx="2" ry="2" />
+<text text-anchor="" x="112.74" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.bookdetailsService.Detail (7,866,144 samples, 0.44%)</title><rect x="110.4" y="245" width="5.3" height="15.0" fill="rgb(0,227,154)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.(*DB).query (524,480 samples, 0.03%)</title><rect x="113.6" y="133" width="0.3" height="15.0" fill="rgb(0,203,187)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).operateHeaders (524,464 samples, 0.03%)</title><rect x="103.5" y="469" width="0.3" height="15.0" fill="rgb(0,210,8)" rx="2" ry="2" />
+<text text-anchor="" x="106.45" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).ReadFrom (1,575,169 samples, 0.09%)</title><rect x="54.1" y="373" width="1.1" height="15.0" fill="rgb(0,202,207)" rx="2" ry="2" />
+<text text-anchor="" x="57.11" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/svc/server.init (18,843,139 samples, 1.06%)</title><rect x="1173.6" y="453" width="12.6" height="15.0" fill="rgb(0,209,63)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Decoder).parseFieldLiteral (524,464 samples, 0.03%)</title><rect x="102.4" y="405" width="0.4" height="15.0" fill="rgb(0,199,179)" rx="2" ry="2" />
+<text text-anchor="" x="105.40" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.readAll (5,248,514 samples, 0.30%)</title><rect x="11.7" y="357" width="3.5" height="15.0" fill="rgb(0,222,116)" rx="2" ry="2" />
+<text text-anchor="" x="14.75" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Get (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="373" width="0.7" height="15.0" fill="rgb(0,229,183)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.makeCutsetFunc (524,304 samples, 0.03%)</title><rect x="146.9" y="325" width="0.4" height="15.0" fill="rgb(0,230,105)" rx="2" ry="2" />
+<text text-anchor="" x="149.95" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Trim (524,304 samples, 0.03%)</title><rect x="146.9" y="341" width="0.4" height="15.0" fill="rgb(0,192,82)" rx="2" ry="2" />
+<text text-anchor="" x="149.95" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).AutoMigrate (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="357" width="2.9" height="15.0" fill="rgb(0,223,204)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.serverHandler.ServeHTTP (1,596,122,515 samples, 90.07%)</title><rect x="110.1" y="469" width="1062.8" height="15.0" fill="rgb(0,214,74)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.serverHandler.ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (1,575,169 samples, 0.09%)</title><rect x="54.1" y="357" width="1.1" height="15.0" fill="rgb(0,209,161)" rx="2" ry="2" />
+<text text-anchor="" x="57.11" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Transport).getConn (524,312 samples, 0.03%)</title><rect x="22.2" y="389" width="0.4" height="15.0" fill="rgb(0,192,92)" rx="2" ry="2" />
+<text text-anchor="" x="25.23" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*Resolver).dial (1,048,600 samples, 0.06%)</title><rect x="105.5" y="437" width="0.7" height="15.0" fill="rgb(0,194,199)" rx="2" ry="2" />
+<text text-anchor="" x="108.55" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/svc.MakeDetailEndpoint.func1 (8,914,888 samples, 0.50%)</title><rect x="110.4" y="341" width="6.0" height="15.0" fill="rgb(0,197,177)" rx="2" ry="2" />
+<text text-anchor="" x="113.44" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/mkevac/debugcharts.init (9,257,224 samples, 0.52%)</title><rect x="1178.6" y="437" width="6.2" height="15.0" fill="rgb(0,215,125)" rx="2" ry="2" />
+<text text-anchor="" x="1181.60" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.NewEncoder.func4 (1,523,408,307 samples, 85.97%)</title><rect x="147.3" y="357" width="1014.4" height="15.0" fill="rgb(0,233,149)" rx="2" ry="2" />
+<text text-anchor="" x="150.30" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bookinfo/vendor/github.com/prometheus/common/expfmt.NewEncoder.func4</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Transport).RoundTrip (524,312 samples, 0.03%)</title><rect x="22.2" y="405" width="0.4" height="15.0" fill="rgb(0,216,162)" rx="2" ry="2" />
+<text text-anchor="" x="25.23" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*IP).MarshalText (524,296 samples, 0.03%)</title><rect x="19.4" y="101" width="0.4" height="15.0" fill="rgb(0,212,133)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.NewDecoder (524,400 samples, 0.03%)</title><rect x="101.4" y="389" width="0.3" height="15.0" fill="rgb(0,191,71)" rx="2" ry="2" />
+<text text-anchor="" x="104.36" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Grow (524,544 samples, 0.03%)</title><rect x="53.8" y="373" width="0.3" height="15.0" fill="rgb(0,221,138)" rx="2" ry="2" />
+<text text-anchor="" x="56.76" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (524,544 samples, 0.03%)</title><rect x="53.8" y="357" width="0.3" height="15.0" fill="rgb(0,219,177)" rx="2" ry="2" />
+<text text-anchor="" x="56.76" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2.init (535,243 samples, 0.03%)</title><rect x="1184.8" y="405" width="0.3" height="15.0" fill="rgb(0,212,174)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http/httpguts.init (535,243 samples, 0.03%)</title><rect x="1184.8" y="389" width="0.3" height="15.0" fill="rgb(0,211,132)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*compressor).deflate (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="325" width="7.4" height="15.0" fill="rgb(0,204,164)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.HandlerFunc.ServeHTTP (1,580,355,083 samples, 89.18%)</title><rect x="117.8" y="405" width="1052.3" height="15.0" fill="rgb(0,233,100)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.HandlerFunc.ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Write (2,110,239 samples, 0.12%)</title><rect x="20.8" y="309" width="1.4" height="15.0" fill="rgb(0,194,47)" rx="2" ry="2" />
+<text text-anchor="" x="23.83" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.labelPairsToText (524,296 samples, 0.03%)</title><rect x="149.7" y="309" width="0.4" height="15.0" fill="rgb(0,236,33)" rx="2" ry="2" />
+<text text-anchor="" x="152.74" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).CombinedConditionSql (3,146,448 samples, 0.18%)</title><rect x="111.1" y="149" width="2.1" height="15.0" fill="rgb(0,212,179)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.openFileNolog (524,296 samples, 0.03%)</title><rect x="55.2" y="373" width="0.3" height="15.0" fill="rgb(0,234,104)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*addrConn).connect.func1 (43,572,171 samples, 2.46%)</title><rect x="72.7" y="485" width="29.0" height="15.0" fill="rgb(0,213,60)" rx="2" ry="2" />
+<text text-anchor="" x="75.69" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Decoder).parseHeaderFieldRepr (1,048,776 samples, 0.06%)</title><rect x="102.1" y="421" width="0.7" height="15.0" fill="rgb(0,201,2)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.glob..func1 (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="357" width="0.7" height="15.0" fill="rgb(0,201,127)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).clone (1,048,864 samples, 0.06%)</title><rect x="111.1" y="69" width="0.7" height="15.0" fill="rgb(0,190,148)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/sirupsen/logrus.(*Entry).Infoln (524,296 samples, 0.03%)</title><rect x="110.1" y="309" width="0.3" height="15.0" fill="rgb(0,218,188)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.marshalerEncoder (1,048,600 samples, 0.06%)</title><rect x="20.1" y="181" width="0.7" height="15.0" fill="rgb(0,209,137)" rx="2" ry="2" />
+<text text-anchor="" x="23.13" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.newHTTP2Client.func3 (2,097,776 samples, 0.12%)</title><rect x="103.8" y="485" width="1.4" height="15.0" fill="rgb(0,228,156)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).FindAllStringIndex (5,243,856 samples, 0.30%)</title><rect x="49.2" y="389" width="3.5" height="15.0" fill="rgb(0,193,150)" rx="2" ry="2" />
+<text text-anchor="" x="52.22" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime/pprof.(*profileBuilder).build (5,748,455 samples, 0.32%)</title><rect x="1186.2" y="469" width="3.8" height="15.0" fill="rgb(0,205,136)" rx="2" ry="2" />
+<text text-anchor="" x="1189.17" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.(*DB).Query (524,480 samples, 0.03%)</title><rect x="113.6" y="165" width="0.3" height="15.0" fill="rgb(0,191,13)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).Times (11,017,938 samples, 0.62%)</title><rect x="10.0" y="469" width="7.3" height="15.0" fill="rgb(0,224,61)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/context.WithTimeout (524,336 samples, 0.03%)</title><rect x="114.3" y="197" width="0.3" height="15.0" fill="rgb(0,227,32)" rx="2" ry="2" />
+<text text-anchor="" x="117.28" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.newFile (524,328 samples, 0.03%)</title><rect x="41.9" y="341" width="0.3" height="15.0" fill="rgb(0,220,45)" rx="2" ry="2" />
+<text text-anchor="" x="44.87" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.compileOnePass (524,608 samples, 0.03%)</title><rect x="1176.9" y="277" width="0.3" height="15.0" fill="rgb(0,228,84)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).readLineSlice (524,320 samples, 0.03%)</title><rect x="108.7" y="421" width="0.3" height="15.0" fill="rgb(0,216,32)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanBitWriter).write (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="245" width="0.7" height="15.0" fill="rgb(0,205,200)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/internal/bitbucket.org/ww/goautoneg.ParseAccept (1,048,736 samples, 0.06%)</title><rect x="146.6" y="357" width="0.7" height="15.0" fill="rgb(0,195,110)" rx="2" ry="2" />
+<text text-anchor="" x="149.60" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).ReadMIMEHeader (524,312 samples, 0.03%)</title><rect x="109.0" y="437" width="0.4" height="15.0" fill="rgb(0,220,7)" rx="2" ry="2" />
+<text text-anchor="" x="112.04" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).scanNumber (524,296 samples, 0.03%)</title><rect x="53.1" y="341" width="0.3" height="15.0" fill="rgb(0,207,103)" rx="2" ry="2" />
+<text text-anchor="" x="56.06" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).Err (526,338 samples, 0.03%)</title><rect x="1173.6" y="309" width="0.4" height="15.0" fill="rgb(0,206,185)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/transport/http.SetResponseHeader.func1 (524,296 samples, 0.03%)</title><rect x="116.7" y="373" width="0.4" height="15.0" fill="rgb(0,194,82)" rx="2" ry="2" />
+<text text-anchor="" x="119.72" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.ctxDriverStmtQuery (524,480 samples, 0.03%)</title><rect x="113.6" y="85" width="0.3" height="15.0" fill="rgb(0,207,26)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-sql-driver/mysql.(*mysqlConn).readColumns (524,480 samples, 0.03%)</title><rect x="113.6" y="37" width="0.3" height="15.0" fill="rgb(0,206,47)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="47.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).floatToken (524,296 samples, 0.03%)</title><rect x="62.2" y="309" width="0.3" height="15.0" fill="rgb(0,239,38)" rx="2" ry="2" />
+<text text-anchor="" x="65.16" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (3,150,338 samples, 0.18%)</title><rect x="13.1" y="309" width="2.1" height="15.0" fill="rgb(0,231,179)" rx="2" ry="2" />
+<text text-anchor="" x="16.14" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).ReadLine (524,320 samples, 0.03%)</title><rect x="108.7" y="437" width="0.3" height="15.0" fill="rgb(0,233,165)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.marshalerEncoder (7,353,847 samples, 0.41%)</title><rect x="17.3" y="341" width="4.9" height="15.0" fill="rgb(0,200,145)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*ccBalancerWrapper).handleSubConnStateChange (524,304 samples, 0.03%)</title><rect x="72.7" y="421" width="0.3" height="15.0" fill="rgb(0,206,162)" rx="2" ry="2" />
+<text text-anchor="" x="75.69" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.fileWithLineNum (526,338 samples, 0.03%)</title><rect x="1173.6" y="277" width="0.4" height="15.0" fill="rgb(0,228,44)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/metrics/prometheus.makeLabels (524,432 samples, 0.03%)</title><rect x="116.0" y="261" width="0.4" height="15.0" fill="rgb(0,209,150)" rx="2" ry="2" />
+<text text-anchor="" x="119.02" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*parser).concat (524,344 samples, 0.03%)</title><rect x="1177.9" y="245" width="0.4" height="15.0" fill="rgb(0,203,186)" rx="2" ry="2" />
+<text text-anchor="" x="1180.90" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.NewGrpcClient (1,048,632 samples, 0.06%)</title><rect x="113.9" y="229" width="0.7" height="15.0" fill="rgb(0,213,120)" rx="2" ry="2" />
+<text text-anchor="" x="116.93" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*encodeState).string (1,048,896 samples, 0.06%)</title><rect x="18.4" y="181" width="0.7" height="15.0" fill="rgb(0,229,84)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanEncoder).generate (2,627,204 samples, 0.15%)</title><rect x="1167.3" y="277" width="1.8" height="15.0" fill="rgb(0,234,144)" rx="2" ry="2" />
+<text text-anchor="" x="1170.31" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (524,448 samples, 0.03%)</title><rect x="18.4" y="149" width="0.3" height="15.0" fill="rgb(0,205,97)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.addDecoderNode (1,574,929 samples, 0.09%)</title><rect x="1185.1" y="373" width="1.1" height="15.0" fill="rgb(0,235,77)" rx="2" ry="2" />
+<text text-anchor="" x="1188.12" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.Proc.fileDescriptors (5,785,687 samples, 0.33%)</title><rect x="38.4" y="405" width="3.8" height="15.0" fill="rgb(0,218,143)" rx="2" ry="2" />
+<text text-anchor="" x="41.37" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).fillFromTIDStatWithContext (11,017,938 samples, 0.62%)</title><rect x="10.0" y="389" width="7.3" height="15.0" fill="rgb(0,192,142)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*Resolver).exchange (4,198,498 samples, 0.24%)</title><rect x="105.2" y="453" width="2.8" height="15.0" fill="rgb(0,203,69)" rx="2" ry="2" />
+<text text-anchor="" x="108.20" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.Open (524,296 samples, 0.03%)</title><rect x="55.2" y="405" width="0.3" height="15.0" fill="rgb(0,201,109)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*addrConn).resetTransport (43,572,171 samples, 2.46%)</title><rect x="72.7" y="469" width="29.0" height="15.0" fill="rgb(0,215,79)" rx="2" ry="2" />
+<text text-anchor="" x="75.69" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.Proc.NewStat (4,197,049 samples, 0.24%)</title><rect x="52.7" y="421" width="2.8" height="15.0" fill="rgb(0,197,137)" rx="2" ry="2" />
+<text text-anchor="" x="55.72" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*decodeState).processHeaderField (524,464 samples, 0.03%)</title><rect x="103.5" y="437" width="0.3" height="15.0" fill="rgb(0,221,100)" rx="2" ry="2" />
+<text text-anchor="" x="106.45" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*mapEncoder).(encoding/json.encode)-fm (524,336 samples, 0.03%)</title><rect x="19.1" y="181" width="0.3" height="15.0" fill="rgb(0,208,159)" rx="2" ry="2" />
+<text text-anchor="" x="22.08" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.ZipkinEndpointMiddleware.func1.1 (9,439,184 samples, 0.53%)</title><rect x="110.1" y="373" width="6.3" height="15.0" fill="rgb(0,210,167)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.ReadAll (2,624,057 samples, 0.15%)</title><rect x="53.4" y="405" width="1.8" height="15.0" fill="rgb(0,195,171)" rx="2" ry="2" />
+<text text-anchor="" x="56.41" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*Writer).Close (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="357" width="7.4" height="15.0" fill="rgb(0,204,112)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.Compile (524,448 samples, 0.03%)</title><rect x="1177.2" y="277" width="0.4" height="15.0" fill="rgb(0,211,67)" rx="2" ry="2" />
+<text text-anchor="" x="1180.21" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.compile (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="293" width="1.4" height="15.0" fill="rgb(0,206,121)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).Read (524,320 samples, 0.03%)</title><rect x="108.7" y="357" width="0.3" height="15.0" fill="rgb(0,205,13)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main.init (18,843,139 samples, 1.06%)</title><rect x="1173.6" y="469" width="12.6" height="15.0" fill="rgb(0,191,40)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*bitState).reset (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="213" width="2.9" height="15.0" fill="rgb(0,211,95)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.parse (524,352 samples, 0.03%)</title><rect x="109.4" y="421" width="0.3" height="15.0" fill="rgb(0,220,181)" rx="2" ry="2" />
+<text text-anchor="" x="112.39" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*loopyWriter).run (2,097,776 samples, 0.12%)</title><rect x="103.8" y="469" width="1.4" height="15.0" fill="rgb(0,202,93)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.FS.NewStat (25,801,915 samples, 1.46%)</title><rect x="55.5" y="405" width="17.2" height="15.0" fill="rgb(0,196,130)" rx="2" ry="2" />
+<text text-anchor="" x="58.51" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/gorilla/mux.setVars (524,352 samples, 0.03%)</title><rect x="117.4" y="405" width="0.4" height="15.0" fill="rgb(0,214,135)" rx="2" ry="2" />
+<text text-anchor="" x="120.42" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*conn).serve (1,599,268,659 samples, 90.25%)</title><rect x="108.0" y="485" width="1064.9" height="15.0" fill="rgb(0,232,197)" rx="2" ry="2" />
+<text text-anchor="" x="110.99" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*conn).serve</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Scanner).Scan (5,263,386 samples, 0.30%)</title><rect x="62.5" y="389" width="3.5" height="15.0" fill="rgb(0,238,138)" rx="2" ry="2" />
+<text text-anchor="" x="65.51" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-sql-driver/mysql.(*mysqlStmt).query (524,480 samples, 0.03%)</title><rect x="113.6" y="53" width="0.3" height="15.0" fill="rgb(0,211,111)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.FS.Path (524,304 samples, 0.03%)</title><rect x="61.1" y="389" width="0.4" height="15.0" fill="rgb(0,230,11)" rx="2" ry="2" />
+<text text-anchor="" x="64.11" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.convertAssign (524,608 samples, 0.03%)</title><rect x="113.2" y="133" width="0.4" height="15.0" fill="rgb(0,194,183)" rx="2" ry="2" />
+<text text-anchor="" x="116.23" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.readAll (524,544 samples, 0.03%)</title><rect x="116.4" y="341" width="0.3" height="15.0" fill="rgb(0,229,179)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/sirupsen/logrus.(*Entry).write (524,296 samples, 0.03%)</title><rect x="110.1" y="261" width="0.3" height="15.0" fill="rgb(0,226,145)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.newFile (524,296 samples, 0.03%)</title><rect x="55.2" y="357" width="0.3" height="15.0" fill="rgb(0,196,73)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.init (1,574,929 samples, 0.09%)</title><rect x="1185.1" y="405" width="1.1" height="15.0" fill="rgb(0,206,99)" rx="2" ry="2" />
+<text text-anchor="" x="1188.12" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*compressor).writeBlock (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="309" width="7.4" height="15.0" fill="rgb(0,194,27)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.(*SpanModel).MarshalJSON (5,243,608 samples, 0.30%)</title><rect x="17.3" y="325" width="3.5" height="15.0" fill="rgb(0,223,171)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*conn).readRequest (2,621,728 samples, 0.15%)</title><rect x="108.0" y="469" width="1.7" height="15.0" fill="rgb(0,230,65)" rx="2" ry="2" />
+<text text-anchor="" x="110.99" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).lock (524,320 samples, 0.03%)</title><rect x="108.7" y="341" width="0.3" height="15.0" fill="rgb(0,193,130)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,448 samples, 0.03%)</title><rect x="1177.2" y="261" width="0.4" height="15.0" fill="rgb(0,225,205)" rx="2" ry="2" />
+<text text-anchor="" x="1180.21" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io.copyBuffer (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="421" width="0.7" height="15.0" fill="rgb(0,218,62)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*encodeState).marshal (3,670,464 samples, 0.21%)</title><rect x="18.4" y="277" width="2.4" height="15.0" fill="rgb(0,199,65)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*encodeState).marshal (7,353,847 samples, 0.41%)</title><rect x="17.3" y="437" width="4.9" height="15.0" fill="rgb(0,210,198)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).reader (2,621,904 samples, 0.15%)</title><rect x="102.1" y="485" width="1.7" height="15.0" fill="rgb(0,231,120)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).scan (524,608 samples, 0.03%)</title><rect x="113.2" y="165" width="0.4" height="15.0" fill="rgb(0,235,31)" rx="2" ry="2" />
+<text text-anchor="" x="116.23" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).ReadFrom (3,150,338 samples, 0.18%)</title><rect x="13.1" y="341" width="2.1" height="15.0" fill="rgb(0,195,89)" rx="2" ry="2" />
+<text text-anchor="" x="16.14" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.newFile (524,328 samples, 0.03%)</title><rect x="15.9" y="309" width="0.4" height="15.0" fill="rgb(0,201,80)" rx="2" ry="2" />
+<text text-anchor="" x="18.94" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.Compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="357" width="0.3" height="15.0" fill="rgb(0,198,167)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http/pprof.Profile (4,230,640 samples, 0.24%)</title><rect x="1170.1" y="421" width="2.8" height="15.0" fill="rgb(0,220,34)" rx="2" ry="2" />
+<text text-anchor="" x="1173.10" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.(*Rows).Scan (524,608 samples, 0.03%)</title><rect x="113.2" y="149" width="0.4" height="15.0" fill="rgb(0,221,161)" rx="2" ry="2" />
+<text text-anchor="" x="116.23" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.OpenFile (524,328 samples, 0.03%)</title><rect x="41.9" y="373" width="0.3" height="15.0" fill="rgb(0,233,201)" rx="2" ry="2" />
+<text text-anchor="" x="44.87" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.newFramer (43,047,867 samples, 2.43%)</title><rect x="73.0" y="405" width="28.7" height="15.0" fill="rgb(0,192,84)" rx="2" ry="2" />
+<text text-anchor="" x="76.04" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (3,150,338 samples, 0.18%)</title><rect x="13.1" y="325" width="2.1" height="15.0" fill="rgb(0,194,29)" rx="2" ry="2" />
+<text text-anchor="" x="16.14" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.ParseRequestURI (524,352 samples, 0.03%)</title><rect x="109.4" y="437" width="0.3" height="15.0" fill="rgb(0,190,120)" rx="2" ry="2" />
+<text text-anchor="" x="112.39" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="341" width="0.3" height="15.0" fill="rgb(0,190,126)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Decoder).callEmit (524,312 samples, 0.03%)</title><rect x="102.1" y="389" width="0.3" height="15.0" fill="rgb(0,212,9)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="261" width="0.3" height="15.0" fill="rgb(0,234,32)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*constMetric).Write (1,048,608 samples, 0.06%)</title><rect x="136.8" y="357" width="0.7" height="15.0" fill="rgb(0,222,93)" rx="2" ry="2" />
+<text text-anchor="" x="139.82" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.NewWriter (1,518,689,643 samples, 85.70%)</title><rect x="150.1" y="293" width="1011.3" height="15.0" fill="rgb(0,193,200)" rx="2" ry="2" />
+<text text-anchor="" x="153.09" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >compress/flate.NewWriter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).fill (524,320 samples, 0.03%)</title><rect x="108.7" y="373" width="0.3" height="15.0" fill="rgb(0,228,161)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/internal/common.HostProc (524,312 samples, 0.03%)</title><rect x="11.4" y="373" width="0.3" height="15.0" fill="rgb(0,213,100)" rx="2" ry="2" />
+<text text-anchor="" x="14.40" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (2,110,239 samples, 0.12%)</title><rect x="20.8" y="293" width="1.4" height="15.0" fill="rgb(0,210,108)" rx="2" ry="2" />
+<text text-anchor="" x="23.83" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.ToLower (524,296 samples, 0.03%)</title><rect x="1161.4" y="325" width="0.3" height="15.0" fill="rgb(0,205,12)" rx="2" ry="2" />
+<text text-anchor="" x="1164.36" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).prepareQuerySQL (3,146,448 samples, 0.18%)</title><rect x="111.1" y="165" width="2.1" height="15.0" fill="rgb(0,212,67)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Grow (2,098,176 samples, 0.12%)</title><rect x="11.7" y="341" width="1.4" height="15.0" fill="rgb(0,226,88)" rx="2" ry="2" />
+<text text-anchor="" x="14.75" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.(*File).Stat (1,048,784 samples, 0.06%)</title><rect x="15.2" y="357" width="0.7" height="15.0" fill="rgb(0,193,139)" rx="2" ry="2" />
+<text text-anchor="" x="18.24" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).newStream (524,336 samples, 0.03%)</title><rect x="115.3" y="117" width="0.4" height="15.0" fill="rgb(0,191,161)" rx="2" ry="2" />
+<text text-anchor="" x="118.33" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/inflection.init (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="373" width="1.4" height="15.0" fill="rgb(0,239,198)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*compressor).init (2,975,711 samples, 0.17%)</title><rect x="1188.0" y="421" width="2.0" height="15.0" fill="rgb(0,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="1191.02" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime/pprof.profileWriter (5,748,455 samples, 0.32%)</title><rect x="1186.2" y="485" width="3.8" height="15.0" fill="rgb(0,190,128)" rx="2" ry="2" />
+<text text-anchor="" x="1189.17" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/gorilla/mux.(*Router).ServeHTTP (11,536,792 samples, 0.65%)</title><rect x="110.1" y="421" width="7.7" height="15.0" fill="rgb(0,200,18)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.normalizeMetricFamilies (2,622,064 samples, 0.15%)</title><rect x="144.9" y="357" width="1.7" height="15.0" fill="rgb(0,193,157)" rx="2" ry="2" />
+<text text-anchor="" x="147.85" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.clone (524,464 samples, 0.03%)</title><rect x="1169.1" y="325" width="0.3" height="15.0" fill="rgb(0,195,169)" rx="2" ry="2" />
+<text text-anchor="" x="1172.06" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.main (18,843,139 samples, 1.06%)</title><rect x="1173.6" y="485" width="12.6" height="15.0" fill="rgb(0,223,34)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.textMarshalerEncoder (524,296 samples, 0.03%)</title><rect x="19.4" y="117" width="0.4" height="15.0" fill="rgb(0,194,135)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/metrics/prometheus.(*Counter).Add (524,312 samples, 0.03%)</title><rect x="115.7" y="277" width="0.3" height="15.0" fill="rgb(0,210,74)" rx="2" ry="2" />
+<text text-anchor="" x="118.67" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.encoder.Encode (1,523,408,307 samples, 85.97%)</title><rect x="147.3" y="373" width="1014.4" height="15.0" fill="rgb(0,214,108)" rx="2" ry="2" />
+<text text-anchor="" x="150.30" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bookinfo/vendor/github.com/prometheus/common/expfmt.encoder.Encode</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="197" width="0.7" height="15.0" fill="rgb(0,190,177)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*ptrEncoder).encode (3,670,464 samples, 0.21%)</title><rect x="18.4" y="229" width="2.4" height="15.0" fill="rgb(0,194,78)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.MustNewConstMetric (1,048,624 samples, 0.06%)</title><rect x="37.7" y="421" width="0.7" height="15.0" fill="rgb(0,191,142)" rx="2" ry="2" />
+<text text-anchor="" x="40.67" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.NewConstMetric (1,048,624 samples, 0.06%)</title><rect x="37.7" y="405" width="0.7" height="15.0" fill="rgb(0,221,68)" rx="2" ry="2" />
+<text text-anchor="" x="40.67" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).TableName (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="325" width="2.9" height="15.0" fill="rgb(0,222,119)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).GetModelStruct (524,328 samples, 0.03%)</title><rect x="111.8" y="85" width="0.4" height="15.0" fill="rgb(0,207,188)" rx="2" ry="2" />
+<text text-anchor="" x="114.83" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.Open (524,328 samples, 0.03%)</title><rect x="41.9" y="389" width="0.3" height="15.0" fill="rgb(0,201,102)" rx="2" ry="2" />
+<text text-anchor="" x="44.87" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).allMatches (1,048,592 samples, 0.06%)</title><rect x="52.0" y="373" width="0.7" height="15.0" fill="rgb(0,200,68)" rx="2" ry="2" />
+<text text-anchor="" x="55.02" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).pin (524,416 samples, 0.03%)</title><rect x="109.7" y="421" width="0.4" height="15.0" fill="rgb(0,207,97)" rx="2" ry="2" />
+<text text-anchor="" x="112.74" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).rune (524,448 samples, 0.03%)</title><rect x="1177.2" y="229" width="0.4" height="15.0" fill="rgb(0,226,68)" rx="2" ry="2" />
+<text text-anchor="" x="1180.21" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).TableName (1,573,256 samples, 0.09%)</title><rect x="112.2" y="85" width="1.0" height="15.0" fill="rgb(0,237,10)" rx="2" ry="2" />
+<text text-anchor="" x="115.18" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*machine).backtrack (526,338 samples, 0.03%)</title><rect x="1173.6" y="213" width="0.4" height="15.0" fill="rgb(0,223,30)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io.Copy (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="437" width="0.7" height="15.0" fill="rgb(0,219,66)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.DialContext (1,048,632 samples, 0.06%)</title><rect x="113.9" y="213" width="0.7" height="15.0" fill="rgb(0,223,155)" rx="2" ry="2" />
+<text text-anchor="" x="116.93" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).Model (1,048,864 samples, 0.06%)</title><rect x="111.1" y="85" width="0.7" height="15.0" fill="rgb(0,217,203)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.TraceID.MarshalJSON (524,296 samples, 0.03%)</title><rect x="20.5" y="149" width="0.3" height="15.0" fill="rgb(0,195,70)" rx="2" ry="2" />
+<text text-anchor="" x="23.48" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).NewStream (1,048,768 samples, 0.06%)</title><rect x="115.0" y="133" width="0.7" height="15.0" fill="rgb(0,191,100)" rx="2" ry="2" />
+<text text-anchor="" x="117.98" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.createCallback (526,338 samples, 0.03%)</title><rect x="1173.6" y="325" width="0.4" height="15.0" fill="rgb(0,236,22)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*ClientConn).Invoke (1,573,160 samples, 0.09%)</title><rect x="114.6" y="181" width="1.1" height="15.0" fill="rgb(0,210,38)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Write (1,573,168 samples, 0.09%)</title><rect x="104.1" y="373" width="1.1" height="15.0" fill="rgb(0,229,31)" rx="2" ry="2" />
+<text text-anchor="" x="107.15" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*dynamicTable).add (524,464 samples, 0.03%)</title><rect x="102.4" y="389" width="0.4" height="15.0" fill="rgb(0,225,169)" rx="2" ry="2" />
+<text text-anchor="" x="105.40" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*compressor).close (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="341" width="7.4" height="15.0" fill="rgb(0,228,94)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*sliceEncoder).(encoding/json.encode)-fm (524,336 samples, 0.03%)</title><rect x="19.8" y="181" width="0.3" height="15.0" fill="rgb(0,239,112)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.init (2,622,664 samples, 0.15%)</title><rect x="1176.9" y="389" width="1.7" height="15.0" fill="rgb(0,216,27)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).AddError (526,338 samples, 0.03%)</title><rect x="1173.6" y="293" width="0.4" height="15.0" fill="rgb(0,201,151)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanBitWriter).writeCode (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="261" width="0.7" height="15.0" fill="rgb(0,202,1)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/pb/comments.(*bookCommentsClient).Get (1,573,160 samples, 0.09%)</title><rect x="114.6" y="197" width="1.1" height="15.0" fill="rgb(0,211,195)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.dialSerial (524,304 samples, 0.03%)</title><rect x="105.9" y="405" width="0.3" height="15.0" fill="rgb(0,227,56)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).Model (1,573,256 samples, 0.09%)</title><rect x="112.2" y="69" width="1.0" height="15.0" fill="rgb(0,203,109)" rx="2" ry="2" />
+<text text-anchor="" x="115.18" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*ClientConn).handleSubConnStateChange (524,304 samples, 0.03%)</title><rect x="72.7" y="437" width="0.3" height="15.0" fill="rgb(0,239,91)" rx="2" ry="2" />
+<text text-anchor="" x="75.69" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>internal/poll.(*pollDesc).init (524,296 samples, 0.03%)</title><rect x="55.2" y="325" width="0.3" height="15.0" fill="rgb(0,239,161)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/mkevac/debugcharts.init.0 (9,257,224 samples, 0.52%)</title><rect x="1178.6" y="421" width="6.2" height="15.0" fill="rgb(0,202,32)" rx="2" ry="2" />
+<text text-anchor="" x="1181.60" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*dynamicTable).add (524,608 samples, 0.03%)</title><rect x="103.8" y="373" width="0.3" height="15.0" fill="rgb(0,190,52)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2.(*Framer).readMetaFrame.func1 (524,312 samples, 0.03%)</title><rect x="102.1" y="373" width="0.3" height="15.0" fill="rgb(0,202,43)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,448 samples, 0.03%)</title><rect x="1177.2" y="245" width="0.4" height="15.0" fill="rgb(0,222,36)" rx="2" ry="2" />
+<text text-anchor="" x="1180.21" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.(*File).Readdirnames (5,261,359 samples, 0.30%)</title><rect x="38.4" y="389" width="3.5" height="15.0" fill="rgb(0,217,52)" rx="2" ry="2" />
+<text text-anchor="" x="41.37" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.(*HttpServerPanicHandler).ServeHTTP (11,536,792 samples, 0.65%)</title><rect x="110.1" y="453" width="7.7" height="15.0" fill="rgb(0,206,80)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (1,573,168 samples, 0.09%)</title><rect x="104.1" y="341" width="1.1" height="15.0" fill="rgb(0,209,133)" rx="2" ry="2" />
+<text text-anchor="" x="107.15" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/models.data (526,338 samples, 0.03%)</title><rect x="1173.6" y="373" width="0.4" height="15.0" fill="rgb(0,215,147)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Decoder).Write (1,048,776 samples, 0.06%)</title><rect x="102.1" y="437" width="0.7" height="15.0" fill="rgb(0,202,198)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime/pprof.StartCPUProfile (4,230,640 samples, 0.24%)</title><rect x="1170.1" y="405" width="2.8" height="15.0" fill="rgb(0,196,170)" rx="2" ry="2" />
+<text text-anchor="" x="1173.10" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*ccBalancerWrapper).watcher (524,336 samples, 0.03%)</title><rect x="101.7" y="485" width="0.4" height="15.0" fill="rgb(0,195,149)" rx="2" ry="2" />
+<text text-anchor="" x="104.71" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2.(*Framer).ReadFrame (1,573,080 samples, 0.09%)</title><rect x="102.1" y="469" width="1.0" height="15.0" fill="rgb(0,226,150)" rx="2" ry="2" />
+<text text-anchor="" x="105.05" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*goCollector).Collect (22,657,298 samples, 1.28%)</title><rect x="22.6" y="469" width="15.1" height="15.0" fill="rgb(0,190,55)" rx="2" ry="2" />
+<text text-anchor="" x="25.58" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).doExecute (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="245" width="2.9" height="15.0" fill="rgb(0,217,28)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/svc.DecodeHTTPDetailZeroRequest (524,544 samples, 0.03%)</title><rect x="116.4" y="373" width="0.3" height="15.0" fill="rgb(0,194,55)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*compiler).compile (524,928 samples, 0.03%)</title><rect x="1178.3" y="309" width="0.3" height="15.0" fill="rgb(0,219,109)" rx="2" ry="2" />
+<text text-anchor="" x="1181.25" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.newFile (524,292 samples, 0.03%)</title><rect x="48.2" y="357" width="0.3" height="15.0" fill="rgb(0,226,70)" rx="2" ry="2" />
+<text text-anchor="" x="51.18" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.(*Registry).Gather.func2 (75,251,080 samples, 4.25%)</title><rect x="22.6" y="485" width="50.1" height="15.0" fill="rgb(0,224,114)" rx="2" ry="2" />
+<text text-anchor="" x="25.58" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >booki..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/gzip.(*Writer).Write (1,518,689,643 samples, 85.70%)</title><rect x="150.1" y="309" width="1011.3" height="15.0" fill="rgb(0,195,173)" rx="2" ry="2" />
+<text text-anchor="" x="153.09" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >compress/gzip.(*Writer).Write</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/gzip.(*Writer).Close (11,033,615 samples, 0.62%)</title><rect x="1161.7" y="373" width="7.4" height="15.0" fill="rgb(0,192,141)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.queryCallback (4,195,536 samples, 0.24%)</title><rect x="111.1" y="181" width="2.8" height="15.0" fill="rgb(0,239,190)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*ModelStruct).TableName (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="309" width="2.9" height="15.0" fill="rgb(0,224,73)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/gorilla/mux.setCurrentRoute (524,416 samples, 0.03%)</title><rect x="117.1" y="405" width="0.3" height="15.0" fill="rgb(0,198,206)" rx="2" ry="2" />
+<text text-anchor="" x="120.07" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*dnsMsg).Pack (2,101,250 samples, 0.12%)</title><rect x="106.2" y="421" width="1.4" height="15.0" fill="rgb(0,197,170)" rx="2" ry="2" />
+<text text-anchor="" x="109.24" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.ReadFile (6,821,626 samples, 0.38%)</title><rect x="11.7" y="373" width="4.6" height="15.0" fill="rgb(0,232,46)" rx="2" ry="2" />
+<text text-anchor="" x="14.75" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).MatchString (526,338 samples, 0.03%)</title><rect x="1173.6" y="261" width="0.4" height="15.0" fill="rgb(0,213,95)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*structEncoder).(encoding/json.encode)-fm (3,670,464 samples, 0.21%)</title><rect x="18.4" y="213" width="2.4" height="15.0" fill="rgb(0,203,79)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Client).Do (524,312 samples, 0.03%)</title><rect x="22.2" y="453" width="0.4" height="15.0" fill="rgb(0,191,84)" rx="2" ry="2" />
+<text text-anchor="" x="25.23" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.MIMEHeader.Set (524,296 samples, 0.03%)</title><rect x="116.7" y="341" width="0.4" height="15.0" fill="rgb(0,191,127)" rx="2" ry="2" />
+<text text-anchor="" x="119.72" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.invoke (1,573,160 samples, 0.09%)</title><rect x="114.6" y="165" width="1.1" height="15.0" fill="rgb(0,191,129)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.openFileNolog (524,328 samples, 0.03%)</title><rect x="41.9" y="357" width="0.3" height="15.0" fill="rgb(0,232,81)" rx="2" ry="2" />
+<text text-anchor="" x="44.87" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.devNull.ReadFrom (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="389" width="0.7" height="15.0" fill="rgb(0,194,173)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (1,050,240 samples, 0.06%)</title><rect x="1166.6" y="213" width="0.7" height="15.0" fill="rgb(0,218,125)" rx="2" ry="2" />
+<text text-anchor="" x="1169.61" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.init (2,110,172 samples, 0.12%)</title><rect x="1184.8" y="437" width="1.4" height="15.0" fill="rgb(0,212,38)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.OpenFile (524,296 samples, 0.03%)</title><rect x="55.2" y="389" width="0.3" height="15.0" fill="rgb(0,197,163)" rx="2" ry="2" />
+<text text-anchor="" x="58.16" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-sql-driver/mysql.(*mysqlStmt).QueryContext (524,480 samples, 0.03%)</title><rect x="113.6" y="69" width="0.3" height="15.0" fill="rgb(0,231,19)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.HttpServerPanicHandler.ServeHTTP (11,536,792 samples, 0.65%)</title><rect x="110.1" y="437" width="7.7" height="15.0" fill="rgb(0,193,55)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/mkevac/debugcharts.(*server).gatherData (11,017,938 samples, 0.62%)</title><rect x="10.0" y="485" width="7.3" height="15.0" fill="rgb(0,212,183)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).ReadSlice (524,320 samples, 0.03%)</title><rect x="108.7" y="389" width="0.3" height="15.0" fill="rgb(0,220,179)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).doExecute (526,338 samples, 0.03%)</title><rect x="1173.6" y="229" width="0.4" height="15.0" fill="rgb(0,227,75)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.init.0 (1,574,929 samples, 0.09%)</title><rect x="1185.1" y="389" width="1.1" height="15.0" fill="rgb(0,237,100)" rx="2" ry="2" />
+<text text-anchor="" x="1188.12" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (1,575,169 samples, 0.09%)</title><rect x="54.1" y="341" width="1.1" height="15.0" fill="rgb(0,217,63)" rx="2" ry="2" />
+<text text-anchor="" x="57.11" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (524,544 samples, 0.03%)</title><rect x="116.4" y="309" width="0.3" height="15.0" fill="rgb(0,218,4)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).finishRequest (524,416 samples, 0.03%)</title><rect x="109.7" y="469" width="0.4" height="15.0" fill="rgb(0,194,192)" rx="2" ry="2" />
+<text text-anchor="" x="112.74" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.OpenFile (524,328 samples, 0.03%)</title><rect x="15.9" y="341" width="0.4" height="15.0" fill="rgb(0,191,24)" rx="2" ry="2" />
+<text text-anchor="" x="18.94" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).MatchString (4,326,741 samples, 0.24%)</title><rect x="1174.0" y="277" width="2.9" height="15.0" fill="rgb(0,216,20)" rx="2" ry="2" />
+<text text-anchor="" x="1176.98" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.makeSlice (524,448 samples, 0.03%)</title><rect x="18.4" y="133" width="0.3" height="15.0" fill="rgb(0,197,169)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).fillFromStat (11,017,938 samples, 0.62%)</title><rect x="10.0" y="437" width="7.3" height="15.0" fill="rgb(0,232,180)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.WithDeadline (524,336 samples, 0.03%)</title><rect x="114.3" y="165" width="0.3" height="15.0" fill="rgb(0,221,182)" rx="2" ry="2" />
+<text text-anchor="" x="117.28" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*Resolver).goLookupIPCNAMEOrder.func1 (4,198,498 samples, 0.24%)</title><rect x="105.2" y="485" width="2.8" height="15.0" fill="rgb(0,202,179)" rx="2" ry="2" />
+<text text-anchor="" x="108.20" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/http2/hpack.(*Encoder).WriteField (2,097,776 samples, 0.12%)</title><rect x="103.8" y="389" width="1.4" height="15.0" fill="rgb(0,228,147)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.(*TraceID).MarshalJSON (524,296 samples, 0.03%)</title><rect x="20.5" y="165" width="0.3" height="15.0" fill="rgb(0,235,139)" rx="2" ry="2" />
+<text text-anchor="" x="23.48" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp/syntax.(*parser).parseRightParen (524,344 samples, 0.03%)</title><rect x="1177.9" y="261" width="0.4" height="15.0" fill="rgb(0,225,66)" rx="2" ry="2" />
+<text text-anchor="" x="1180.90" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*arrayEncoder).encode (7,353,847 samples, 0.41%)</title><rect x="17.3" y="357" width="4.9" height="15.0" fill="rgb(0,197,81)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/sirupsen/logrus.(*TextFormatter).Format (524,296 samples, 0.03%)</title><rect x="110.1" y="245" width="0.3" height="15.0" fill="rgb(0,224,195)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.NewClientTransport (43,047,867 samples, 2.43%)</title><rect x="73.0" y="437" width="28.7" height="15.0" fill="rgb(0,192,87)" rx="2" ry="2" />
+<text text-anchor="" x="76.04" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).grow (2,098,176 samples, 0.12%)</title><rect x="11.7" y="325" width="1.4" height="15.0" fill="rgb(0,214,138)" rx="2" ry="2" />
+<text text-anchor="" x="14.75" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.Marshal (7,353,847 samples, 0.41%)</title><rect x="17.3" y="453" width="4.9" height="15.0" fill="rgb(0,239,197)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/global.(*db).WarpRawScan (4,720,000 samples, 0.27%)</title><rect x="110.8" y="229" width="3.1" height="15.0" fill="rgb(0,233,76)" rx="2" ry="2" />
+<text text-anchor="" x="113.79" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*encodeState).reflectValue (7,353,847 samples, 0.41%)</title><rect x="17.3" y="421" width="4.9" height="15.0" fill="rgb(0,192,140)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io/ioutil.(*devNull).ReadFrom (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="405" width="0.7" height="15.0" fill="rgb(0,202,121)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*structEncoder).(encoding/json.encode)-fm (524,296 samples, 0.03%)</title><rect x="19.4" y="149" width="0.4" height="15.0" fill="rgb(0,206,64)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.Sprintf (524,304 samples, 0.03%)</title><rect x="20.1" y="133" width="0.4" height="15.0" fill="rgb(0,232,198)" rx="2" ry="2" />
+<text text-anchor="" x="23.13" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).whereSQL (3,146,448 samples, 0.18%)</title><rect x="111.1" y="133" width="2.1" height="15.0" fill="rgb(0,230,43)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).callCallbacks (4,195,536 samples, 0.24%)</title><rect x="111.1" y="197" width="2.8" height="15.0" fill="rgb(0,208,132)" rx="2" ry="2" />
+<text text-anchor="" x="114.14" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.(*DB).QueryContext (524,480 samples, 0.03%)</title><rect x="113.6" y="149" width="0.3" height="15.0" fill="rgb(0,219,20)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).callCallbacks (526,338 samples, 0.03%)</title><rect x="1173.6" y="341" width="0.4" height="15.0" fill="rgb(0,229,163)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*persistConn).writeLoop (1,056,789 samples, 0.06%)</title><rect x="1172.9" y="485" width="0.7" height="15.0" fill="rgb(0,202,101)" rx="2" ry="2" />
+<text text-anchor="" x="1175.92" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*ptrEncoder).encode (524,296 samples, 0.03%)</title><rect x="19.4" y="165" width="0.4" height="15.0" fill="rgb(0,210,74)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.onePassCopy (524,608 samples, 0.03%)</title><rect x="1176.9" y="261" width="0.3" height="15.0" fill="rgb(0,222,111)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).WriteString (524,448 samples, 0.03%)</title><rect x="18.7" y="165" width="0.4" height="15.0" fill="rgb(0,233,41)" rx="2" ry="2" />
+<text text-anchor="" x="21.73" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).Grow (524,544 samples, 0.03%)</title><rect x="116.4" y="325" width="0.3" height="15.0" fill="rgb(0,194,17)" rx="2" ry="2" />
+<text text-anchor="" x="119.37" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*loopyWriter).handle (2,097,776 samples, 0.12%)</title><rect x="103.8" y="453" width="1.4" height="15.0" fill="rgb(0,209,196)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/openzipkin/zipkin-go/model.(*ID).MarshalJSON (524,304 samples, 0.03%)</title><rect x="20.1" y="165" width="0.4" height="15.0" fill="rgb(0,208,175)" rx="2" ry="2" />
+<text text-anchor="" x="23.13" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*ptrEncoder).(encoding/json.encode)-fm (524,296 samples, 0.03%)</title><rect x="19.4" y="181" width="0.4" height="15.0" fill="rgb(0,210,5)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/net/idna.init (535,243 samples, 0.03%)</title><rect x="1184.8" y="373" width="0.3" height="15.0" fill="rgb(0,221,188)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/internal/common.GetEnv (524,312 samples, 0.03%)</title><rect x="11.4" y="357" width="0.3" height="15.0" fill="rgb(0,208,138)" rx="2" ry="2" />
+<text text-anchor="" x="14.40" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).scanOne (524,296 samples, 0.03%)</title><rect x="53.1" y="373" width="0.3" height="15.0" fill="rgb(0,192,7)" rx="2" ry="2" />
+<text text-anchor="" x="56.06" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.IP.MarshalText (524,296 samples, 0.03%)</title><rect x="19.4" y="85" width="0.4" height="15.0" fill="rgb(0,195,131)" rx="2" ry="2" />
+<text text-anchor="" x="22.43" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*ServeMux).ServeHTTP (1,584,585,723 samples, 89.42%)</title><rect x="117.8" y="453" width="1055.1" height="15.0" fill="rgb(0,200,125)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*ServeMux).ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.newHTTP2Client (43,047,867 samples, 2.43%)</title><rect x="73.0" y="421" width="28.7" height="15.0" fill="rgb(0,239,148)" rx="2" ry="2" />
+<text text-anchor="" x="76.04" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*Regexp).Split (6,292,480 samples, 0.36%)</title><rect x="48.5" y="405" width="4.2" height="15.0" fill="rgb(0,205,186)" rx="2" ry="2" />
+<text text-anchor="" x="51.53" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.MetricFamilyToText (1,523,408,307 samples, 85.97%)</title><rect x="147.3" y="341" width="1014.4" height="15.0" fill="rgb(0,203,156)" rx="2" ry="2" />
+<text text-anchor="" x="150.30" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bookinfo/vendor/github.com/prometheus/common/expfmt.MetricFamilyToText</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*loopyWriter).writeHeader (2,097,776 samples, 0.12%)</title><rect x="103.8" y="405" width="1.4" height="15.0" fill="rgb(0,200,66)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus/promhttp.HandlerFor.func1 (1,580,355,083 samples, 89.18%)</title><rect x="117.8" y="389" width="1052.3" height="15.0" fill="rgb(0,234,90)" rx="2" ry="2" />
+<text text-anchor="" x="120.77" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bookinfo/vendor/github.com/prometheus/client_golang/prometheus/promhttp.HandlerFor.func1</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.convertAssign (524,608 samples, 0.03%)</title><rect x="113.2" y="117" width="0.4" height="15.0" fill="rgb(0,219,173)" rx="2" ry="2" />
+<text text-anchor="" x="116.23" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>os.Open (524,292 samples, 0.03%)</title><rect x="48.2" y="405" width="0.3" height="15.0" fill="rgb(0,226,125)" rx="2" ry="2" />
+<text text-anchor="" x="51.18" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*mapEncoder).encode (524,336 samples, 0.03%)</title><rect x="19.1" y="165" width="0.3" height="15.0" fill="rgb(0,219,12)" rx="2" ry="2" />
+<text text-anchor="" x="22.08" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).ReadLine (524,320 samples, 0.03%)</title><rect x="108.7" y="405" width="0.3" height="15.0" fill="rgb(0,208,11)" rx="2" ry="2" />
+<text text-anchor="" x="111.69" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*dnsPacketConn).dnsRoundTrip (2,625,546 samples, 0.15%)</title><rect x="106.2" y="437" width="1.8" height="15.0" fill="rgb(0,223,197)" rx="2" ry="2" />
+<text text-anchor="" x="109.24" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.Fscanf (524,296 samples, 0.03%)</title><rect x="62.2" y="357" width="0.3" height="15.0" fill="rgb(0,235,95)" rx="2" ry="2" />
+<text text-anchor="" x="65.16" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/client_golang/prometheus.populateMetric (1,048,608 samples, 0.06%)</title><rect x="136.8" y="341" width="0.7" height="15.0" fill="rgb(0,226,117)" rx="2" ry="2" />
+<text text-anchor="" x="139.82" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanEncoder).generate (7,356,171 samples, 0.42%)</title><rect x="1161.7" y="261" width="4.9" height="15.0" fill="rgb(0,234,128)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*Resolver).tryOneName (4,198,498 samples, 0.24%)</title><rect x="105.2" y="469" width="2.8" height="15.0" fill="rgb(0,191,162)" rx="2" ry="2" />
+<text text-anchor="" x="108.20" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.(*Buffer).WriteByte (524,448 samples, 0.03%)</title><rect x="18.4" y="165" width="0.3" height="15.0" fill="rgb(0,211,83)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*ccBalancerWrapper).UpdateBalancerState (524,336 samples, 0.03%)</title><rect x="101.7" y="453" width="0.4" height="15.0" fill="rgb(0,222,143)" rx="2" ry="2" />
+<text text-anchor="" x="104.71" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/procfs.Proc.NewLimits (15,760,507 samples, 0.89%)</title><rect x="42.2" y="421" width="10.5" height="15.0" fill="rgb(0,224,168)" rx="2" ry="2" />
+<text text-anchor="" x="45.22" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/shirou/gopsutil/process.(*Process).fillFromTIDStat (11,017,938 samples, 0.62%)</title><rect x="10.0" y="405" width="7.3" height="15.0" fill="rgb(0,193,46)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*Scope).buildCondition (1,573,256 samples, 0.09%)</title><rect x="112.2" y="117" width="1.0" height="15.0" fill="rgb(0,205,101)" rx="2" ry="2" />
+<text text-anchor="" x="115.18" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/inflection.compile (2,097,736 samples, 0.12%)</title><rect x="1176.9" y="341" width="1.4" height="15.0" fill="rgb(0,238,130)" rx="2" ry="2" />
+<text text-anchor="" x="1179.86" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*pickerWrapper).updatePicker (524,336 samples, 0.03%)</title><rect x="101.7" y="437" width="0.4" height="15.0" fill="rgb(0,220,130)" rx="2" ry="2" />
+<text text-anchor="" x="104.71" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.bookdetailsService.Detail.func2 (1,573,160 samples, 0.09%)</title><rect x="114.6" y="213" width="1.1" height="15.0" fill="rgb(0,232,51)" rx="2" ry="2" />
+<text text-anchor="" x="117.63" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.Fprintf (1,518,689,643 samples, 85.70%)</title><rect x="150.1" y="325" width="1011.3" height="15.0" fill="rgb(0,231,90)" rx="2" ry="2" />
+<text text-anchor="" x="153.09" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >fmt.Fprintf</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fmt.(*ss).scanOne (524,296 samples, 0.03%)</title><rect x="62.2" y="325" width="0.3" height="15.0" fill="rgb(0,235,204)" rx="2" ry="2" />
+<text text-anchor="" x="65.16" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).handleData (524,360 samples, 0.03%)</title><rect x="103.1" y="469" width="0.4" height="15.0" fill="rgb(0,217,139)" rx="2" ry="2" />
+<text text-anchor="" x="106.10" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Request).WithContext (524,352 samples, 0.03%)</title><rect x="117.4" y="373" width="0.4" height="15.0" fill="rgb(0,237,186)" rx="2" ry="2" />
+<text text-anchor="" x="120.42" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*loopyWriter).originateStream (2,097,776 samples, 0.12%)</title><rect x="103.8" y="421" width="1.4" height="15.0" fill="rgb(0,219,161)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.Instrmw.Detail.func1 (1,048,744 samples, 0.06%)</title><rect x="115.7" y="293" width="0.7" height="15.0" fill="rgb(0,238,175)" rx="2" ry="2" />
+<text text-anchor="" x="118.67" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*Dialer).DialContext (524,304 samples, 0.03%)</title><rect x="105.9" y="421" width="0.3" height="15.0" fill="rgb(0,239,185)" rx="2" ry="2" />
+<text text-anchor="" x="108.90" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/golang.org/x/text/unicode/norm.init (535,243 samples, 0.03%)</title><rect x="1184.8" y="357" width="0.3" height="15.0" fill="rgb(0,190,73)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).pinSlow (524,416 samples, 0.03%)</title><rect x="109.7" y="405" width="0.4" height="15.0" fill="rgb(0,195,135)" rx="2" ry="2" />
+<text text-anchor="" x="112.74" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.Set (524,296 samples, 0.03%)</title><rect x="116.7" y="357" width="0.4" height="15.0" fill="rgb(0,238,38)" rx="2" ry="2" />
+<text text-anchor="" x="119.72" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*encodeState).reflectValue (3,670,464 samples, 0.21%)</title><rect x="18.4" y="261" width="2.4" height="15.0" fill="rgb(0,221,47)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*arrayEncoder).encode (524,336 samples, 0.03%)</title><rect x="19.8" y="133" width="0.3" height="15.0" fill="rgb(0,221,62)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*arrayEncoder).(encoding/json.encode)-fm (7,353,847 samples, 0.41%)</title><rect x="17.3" y="373" width="4.9" height="15.0" fill="rgb(0,225,119)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/prometheus/common/expfmt.Negotiate (1,048,736 samples, 0.06%)</title><rect x="146.6" y="373" width="0.7" height="15.0" fill="rgb(0,228,70)" rx="2" ry="2" />
+<text text-anchor="" x="149.60" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/gorilla/mux.contextSet (524,352 samples, 0.03%)</title><rect x="117.4" y="389" width="0.4" height="15.0" fill="rgb(0,202,47)" rx="2" ry="2" />
+<text text-anchor="" x="120.42" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.init (2,110,172 samples, 0.12%)</title><rect x="1184.8" y="421" width="1.4" height="15.0" fill="rgb(0,196,26)" rx="2" ry="2" />
+<text text-anchor="" x="1187.77" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*http2Client).createHeaderFields (524,432 samples, 0.03%)</title><rect x="115.0" y="117" width="0.3" height="15.0" fill="rgb(0,223,15)" rx="2" ry="2" />
+<text text-anchor="" x="117.98" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc.(*addrConn).createTransport (43,572,171 samples, 2.46%)</title><rect x="72.7" y="453" width="29.0" height="15.0" fill="rgb(0,200,94)" rx="2" ry="2" />
+<text text-anchor="" x="75.69" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.NewWriter (5,748,455 samples, 0.32%)</title><rect x="1186.2" y="437" width="3.8" height="15.0" fill="rgb(0,217,40)" rx="2" ry="2" />
+<text text-anchor="" x="1189.17" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/bookdetails-service/handlers.LoggingEndpointMiddleware.func1.1.1 (524,296 samples, 0.03%)</title><rect x="110.1" y="341" width="0.3" height="15.0" fill="rgb(0,198,33)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.putBufioWriter (524,416 samples, 0.03%)</title><rect x="109.7" y="453" width="0.4" height="15.0" fill="rgb(0,195,34)" rx="2" ry="2" />
+<text text-anchor="" x="112.74" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>compress/flate.(*huffmanBitWriter).indexTokens (7,356,171 samples, 0.42%)</title><rect x="1161.7" y="277" width="4.9" height="15.0" fill="rgb(0,194,103)" rx="2" ry="2" />
+<text text-anchor="" x="1164.71" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*structEncoder).encode (3,670,464 samples, 0.21%)</title><rect x="18.4" y="197" width="2.4" height="15.0" fill="rgb(0,229,149)" rx="2" ry="2" />
+<text text-anchor="" x="21.38" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*sliceEncoder).(encoding/json.encode)-fm (7,353,847 samples, 0.41%)</title><rect x="17.3" y="405" width="4.9" height="15.0" fill="rgb(0,200,113)" rx="2" ry="2" />
+<text text-anchor="" x="20.34" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.(*DB).queryDC (524,480 samples, 0.03%)</title><rect x="113.6" y="117" width="0.3" height="15.0" fill="rgb(0,205,24)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/jinzhu/gorm.(*DB).NewScope (524,464 samples, 0.03%)</title><rect x="110.8" y="197" width="0.3" height="15.0" fill="rgb(0,230,199)" rx="2" ry="2" />
+<text text-anchor="" x="113.79" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (1,772,078,904 samples, 100%)</title><rect x="10.0" y="501" width="1180.0" height="15.0" fill="rgb(0,227,143)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/github.com/go-kit/kit/transport/http.(*Server).ServeHTTP (10,488,024 samples, 0.59%)</title><rect x="110.1" y="405" width="7.0" height="15.0" fill="rgb(0,221,48)" rx="2" ry="2" />
+<text text-anchor="" x="113.09" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.send (524,312 samples, 0.03%)</title><rect x="22.2" y="421" width="0.4" height="15.0" fill="rgb(0,195,94)" rx="2" ry="2" />
+<text text-anchor="" x="25.23" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>database/sql.rowsiFromStatement (524,480 samples, 0.03%)</title><rect x="113.6" y="101" width="0.3" height="15.0" fill="rgb(0,235,94)" rx="2" ry="2" />
+<text text-anchor="" x="116.58" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bookinfo/vendor/google.golang.org/grpc/transport.(*loopyWriter).headerHandler (2,097,776 samples, 0.12%)</title><rect x="103.8" y="437" width="1.4" height="15.0" fill="rgb(0,216,35)" rx="2" ry="2" />
+<text text-anchor="" x="106.80" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.canonicalMIMEHeaderKey (524,312 samples, 0.03%)</title><rect x="109.0" y="421" width="0.4" height="15.0" fill="rgb(0,216,23)" rx="2" ry="2" />
+<text text-anchor="" x="112.04" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>regexp.(*bitState).reset (526,338 samples, 0.03%)</title><rect x="1173.6" y="197" width="0.4" height="15.0" fill="rgb(0,225,153)" rx="2" ry="2" />
+<text text-anchor="" x="1176.62" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>encoding/json.(*sliceEncoder).encode (524,336 samples, 0.03%)</title><rect x="19.8" y="165" width="0.3" height="15.0" fill="rgb(0,226,32)" rx="2" ry="2" />
+<text text-anchor="" x="22.78" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reflect.Value.MapKeys (524,336 samples, 0.03%)</title><rect x="19.1" y="149" width="0.3" height="15.0" fill="rgb(0,214,49)" rx="2" ry="2" />
+<text text-anchor="" x="22.08" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
