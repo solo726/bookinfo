@@ -153,20 +153,20 @@ $ cat $GOPATH/src/bookinfo/bookdetails-server/runtime/pid | xargs kill -s SIGINT
 ```bash
 $ open http://127.0.0.1:9090
 ```
-<img src="_assets/prom.png" />
+<img src="assets/prom.png" />
 
 ## zipkin调用链路跟踪
 ```bash
 $ open http://127.0.0.1:9411
 ```
-<img src="_assets/zipkin.png" />
+<img src="assets/zipkin.png" />
 
 ## Debug
 > 实时图表化数据
 ```bash
 $ open http://localhost:5003/debug/charts/
 ```
-<img src="_assets/debug-charts.png" />
+<img src="assets/debug-charts.png" />
 
 > pprof
 ```bash
