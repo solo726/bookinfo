@@ -87,11 +87,14 @@ var BOOK_DB *db
 
 var ZPTracer *zipkin.Tracer
 
+var Redis *redisClient
+
 func init() {
 	loadConf()
 	Logger = newLogger()
 	BOOK_DB = newBookDB()
 	ZPTracer = newZPTracer()
+	Redis = newRedisClient()
 	models.Migrate(BOOK_DB.DB)
 }
 

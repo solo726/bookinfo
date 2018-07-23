@@ -44,7 +44,7 @@ func WrapEndpoints(in svc.Endpoints) svc.Endpoints {
 		ErrorPercentThreshold: 10,
 		MaxConcurrentRequests: 10,
 	})
-	in.DetailEndpoint = Hystrix("books-details/v1/detail")(in.DetailEndpoint)
+	//in.DetailEndpoint = Hystrix("books-details/v1/detail")(in.DetailEndpoint)
 
 	return in
 }

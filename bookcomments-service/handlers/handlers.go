@@ -2,6 +2,10 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"time"
+
+	"github.com/pquerna/ffjson/ffjson"
 
 	pb "bookinfo/pb/comments"
 	"bookinfo/bookcomments-service/global"
@@ -33,6 +37,28 @@ func (s bookcommentsService) Get(ctx context.Context, in *pb.GetReq) (*pb.GetRes
 		resp.Msg = global.ERROR_PARAMS_ERROR.Msg
 		return &resp, nil
 	}
+
+	var redisKey = fmt.Sprintf("comments_%d", in.Id)
+
+	// get from cache
+	{
+		cacheBytes := global.Redis.WarpGet(ctx, redisKey).Val()
+
+		var comments []*pb.Comment
+
+		if len(cacheBytes) > 0 {
+			if err := ffjson.Unmarshal([]byte(cacheBytes), &comments); err != nil {
+				global.Logger.Warnln("redis get error:", err)
+			} else {
+				resp.Code = global.SUCCESS.Code
+				resp.Msg = global.SUCCESS.Msg
+				resp.Data = comments
+				return &resp, nil
+			}
+		}
+	}
+
+	//get comments from db
 	comments := []models.Comments{}
 
 	global.BOOK_DB.WarpRawScan(ctx, &comments, "select * from comments where book_id = ?", in.Id)
@@ -48,12 +74,11 @@ func (s bookcommentsService) Get(ctx context.Context, in *pb.GetReq) (*pb.GetRes
 	resp.Msg = global.SUCCESS.Msg
 	resp.Data = data
 
-	return &resp, nil
-	//resp = pb.GetResp{
-	//// Code:
-	//// Msg:
-	//// Data:
-	//}
+	go func(ctx context.Context, comments []models.Comments) {
+		if err := global.Redis.WarpSet(ctx, redisKey, comments, 3600*time.Second).Err(); err != nil {
+			global.Logger.Warnln("redis set error:", err)
+		}
+	}(ctx, comments)
 	return &resp, nil
 }
 

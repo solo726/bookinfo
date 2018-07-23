@@ -105,8 +105,8 @@ func Run() {
 		}
 
 		srv := svc.MakeGRPCServer(endpoints)
-		s := grpc.NewServer(global.GrpcServerPanicHandlerOptions()...)
-		//s := grpc.NewServer(global.GrpcOpts...)
+		//s := grpc.NewServer(global.GrpcServerPanicHandlerOptions()...)
+		s := grpc.NewServer(global.GrpcOpts...)
 		pb.RegisterBookDetailsServer(s, srv)
 
 		errc <- s.Serve(ln)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func InterruptHandler(errc chan<- error) {
@@ -13,6 +14,7 @@ func InterruptHandler(errc chan<- error) {
 	terminateError := fmt.Errorf("%s", <-c)
 
 	// Place whatever shutdown handling you want here
+	time.Sleep(10 * time.Second)
 	fmt.Println("service shutdown...")
 
 	errc <- terminateError

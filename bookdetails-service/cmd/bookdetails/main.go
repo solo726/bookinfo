@@ -61,6 +61,7 @@ func submain() int {
 	var (
 		httpAddr = flag.String("http.addr", "", "HTTP address of addsvc")
 		grpcAddr = flag.String("grpc.addr", ":5002", "gRPC (HTTP) address of addsvc")
+		//grpcAddr = flag.String("grpc.addr", ":5002", "gRPC (HTTP) address of addsvc")
 	)
 
 	// The addcli presumes no service discovery system, and expects users to
@@ -144,7 +145,10 @@ func submain() int {
 		fmt.Println("Client Requested with:")
 		fmt.Println(IdDetail)
 		fmt.Println("Server Responded with:")
+		fmt.Println("this is realize start....")
 		fmt.Println(v)
+		//b, _ := json.Marshal(v)
+		//fmt.Printf("%v\n", string(b))
 
 	default:
 		flag.Usage()

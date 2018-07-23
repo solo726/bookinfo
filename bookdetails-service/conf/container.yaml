@@ -13,11 +13,11 @@ db_book:
   max_idle_conns: 10
   max_open_conns: 1000
 redis:
-  addr: "redis.server:6973"
+  addr: "redis.server:6379"
   password: ""
   db: 0
 zipkin:
-  url: http://zipkin:9411
+  addr: http://zipkin:9411
   service_name: book-details
   reporter:
     timeout: 5

@@ -3,14 +3,15 @@ package global
 import (
 	"os"
 	"log"
+	"io/ioutil"
 
 	"github.com/joho/godotenv"
-	"io/ioutil"
 	"gopkg.in/yaml.v2"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/openzipkin/zipkin-go"
-	"bookinfo/bookdetails-service/models"
 	"google.golang.org/grpc"
+
+	"bookinfo/bookdetails-service/models"
 )
 
 type conf struct {
@@ -89,12 +90,15 @@ var ZPTracer *zipkin.Tracer
 
 var GrpcOpts []grpc.ServerOption
 
+var Redis *redisClient
+
 func init() {
 	loadConf()
 	Logger = newLogger()
 	BOOK_DB = newBookDB()
 	ZPTracer = newZPTracer()
 	GrpcOpts = loadGrpcOpts()
+	Redis = newRedisClient()
 	models.Migrate(BOOK_DB.DB)
 }
 

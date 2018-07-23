@@ -70,3 +70,8 @@ services:
         echo "RUN_MODE: container" > .env && \
         echo "MIGRATE: yes" >> .env && \
         realize start
+  redis.server:
+    image: redis
+    ports:
+      - 6379:6379
+

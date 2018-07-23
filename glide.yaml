@@ -35,3 +35,4 @@ import:
   - http
 - package: github.com/grpc-ecosystem/go-grpc-middleware
   version: ^1.0.0
+- package: github.com/pquerna/ffjson
